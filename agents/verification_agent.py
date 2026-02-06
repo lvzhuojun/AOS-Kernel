@@ -37,7 +37,11 @@ class VerificationAgent:
         )
         system_prompt = "你是 AOS-Kernel 的验证模块。根据预期目标与执行结果，判断是否达成。只输出判断结论和一句话原因。"
         try:
-            raw = self._llm.generate(system_prompt=system_prompt, user_prompt=user_prompt)
+            raw = self._llm.generate(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                tier="cheap",
+            )
             return (raw or "").strip() or ("达成" if success else "未达成")
         except Exception:
             return "达成" if success else "未达成（exit_code 非 0 或执行异常）"

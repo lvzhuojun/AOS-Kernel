@@ -53,6 +53,7 @@ class DockerManager:
         self._container_id: Optional[str] = None
 
     def _get_client(self):
+        """获取 Docker 客户端；未安装 docker 时抛出 RuntimeError。"""
         if not _DOCKER_AVAILABLE:
             raise RuntimeError("docker 未安装，请 pip install docker")
         if self._client is None:
@@ -76,6 +77,7 @@ class DockerManager:
         return self._container_id  # type: ignore
 
     def _start_container(self) -> None:
+        """创建并启动常驻容器（sleep infinity），挂载工作区并设置资源限制。"""
         client = self._get_client()
         host_workspace = os.path.abspath(self.workspace_path)
         os.makedirs(host_workspace, exist_ok=True)
@@ -92,7 +94,11 @@ class DockerManager:
         self._container_id = container.id if hasattr(container, "id") else str(container)
 
     def _exec_with_timeout(self, cmd: list, workdir: str = CONTAINER_WORKSPACE) -> Tuple[str, str, int]:
-        """在容器内执行命令，带 30 秒超时。返回 (stdout, stderr, exit_code)。"""
+        """
+        在容器内执行命令。Docker exec_run 无 timeout 参数，故用 ThreadPoolExecutor 做执行时长监控；
+        shell 命令会在前加 timeout 30 作为双重保护（容器需有 timeout，如 python:3.10-slim）。
+        返回 (stdout, stderr, exit_code)。
+        """
         def _run() -> Tuple[str, str, int]:
             container_id = self.ensure_container()
             client = self._get_client()
@@ -111,17 +117,17 @@ class DockerManager:
 
     def execute_python(self, code: str) -> Tuple[str, str, int]:
         """
-        在容器内执行 Python 代码，30 秒超时。
-        返回 (stdout, stderr, exit_code)。
+        在容器内执行 Python 代码，30 秒超时（ThreadPoolExecutor 监控）。
         """
         return self._exec_with_timeout(["python", "-c", code])
 
     def execute_shell(self, command: str) -> Tuple[str, str, int]:
         """
-        在容器内执行 shell 命令（/bin/sh -c "command"），30 秒超时。
-        返回 (stdout, stderr, exit_code)。
+        在容器内执行 shell 命令。前加 timeout 30 限制执行时长（容器内需有 timeout 命令）。
+        同时由 ThreadPoolExecutor 做超时监控。
         """
-        return self._exec_with_timeout(["/bin/sh", "-c", command])
+        wrapped = f"timeout {EXEC_TIMEOUT_SECONDS} {command}"
+        return self._exec_with_timeout(["/bin/sh", "-c", wrapped])
 
     def stop(self) -> None:
         """停止并移除常驻容器（若存在）。"""

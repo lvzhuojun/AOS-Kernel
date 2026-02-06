@@ -1,9 +1,4 @@
-# AOS-Kernel 项目依赖
-
-# 核心框架
-langgraph>=0.2.0
-langchain>=0.3.0
-langchain-core>=0.3.0
+# AOS-Kernel 项目依赖（Phase 1 核心）
 
 # 数据验证和序列化
 pydantic>=2.0.0
@@ -11,11 +6,15 @@ pydantic>=2.0.0
 # 环境变量管理
 python-dotenv>=1.0.0
 
-# Docker 集成（用于沙箱执行）
+# Docker 集成（沙箱执行）
 docker>=7.0.0
 
-# Google Gemini API（新 SDK，替代已弃用的 google-generativeai）
+# Google Gemini API（新 SDK）
 google-genai>=1.0.0
+
+# 可选：后续扩展
+# langgraph>=0.2.0
+# langchain>=0.3.0
 
 # 可选：如果需要向量数据库支持记忆层
 # chromadb>=0.4.0

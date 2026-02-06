@@ -3,12 +3,13 @@
 
 每个 step 在进入沙箱前必须经过 verify_step(step)。
 风险分级：SAFE / RISKY / DANGEROUS；
-RISKY 与 DANGEROUS 需挂起并设为 awaiting_user_approval。
+涉及 sandbox_workspace 之外路径的操作必须标记为 DANGEROUS。
 """
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -52,16 +53,59 @@ class PermissionGateway:
         self._workspace_abspath: Optional[str] = None
 
     def _norm_workspace(self) -> str:
+        """返回工作区绝对路径（统一正斜杠）。"""
         if self._workspace_abspath is None:
             self._workspace_abspath = os.path.abspath(self.workspace_path).replace("\\", "/")
         return self._workspace_abspath
 
     def _path_in_workspace(self, path: str) -> bool:
-        if not path:
+        """判断 path 是否在工作区目录内。"""
+        if not path or not path.strip():
             return False
-        path = os.path.abspath(path).replace("\\", "/")
+        try:
+            path = os.path.abspath(path.strip()).replace("\\", "/")
+        except Exception:
+            return False
         ws = self._norm_workspace()
         return path == ws or path.startswith(ws + "/")
+
+    def _extract_paths_from_step(self, step: Dict[str, Any]) -> List[str]:
+        """从 step 的 parameters、description、tool 中提取路径字符串，并调用 _path_in_workspace 校验。"""
+        paths: List[str] = []
+        desc = (step.get("description") or "") + " " + (step.get("tool") or "")
+        # step 顶层显式参数
+        for key in ("path", "file_path", "file", "target"):
+            v = step.get(key)
+            if isinstance(v, str) and v.strip():
+                paths.append(v.strip())
+        # step['parameters'] 中的路径（如 {"path": "D:/data/foo.txt"}）
+        params = step.get("parameters")
+        if isinstance(params, dict):
+            for key in ("path", "file_path", "file", "target", "file_path"):
+                v = params.get(key)
+                if isinstance(v, str) and v.strip():
+                    paths.append(v.strip())
+        # description 中 Windows 风格：D:\xxx, C:\xxx, D:/xxx
+        for m in re.finditer(r"(?i)[A-Za-z]:[/\\][^\s\"']+", desc):
+            paths.append(m.group(0).strip())
+        # description 中 Unix 绝对路径：/etc/xxx, /usr/xxx
+        for m in re.finditer(r"/[a-zA-Z0-9_.-]+[/\w.-]*", desc):
+            p = m.group(0).strip()
+            if len(p) > 1 and not p.startswith("//"):
+                paths.append(p)
+        return paths
+
+    def _has_path_outside_workspace(self, step: Dict[str, Any]) -> bool:
+        """若 description/tool 涉及任意路径在工作区外，返回 True（应标为 DANGEROUS）。"""
+        for raw in self._extract_paths_from_step(step):
+            if not raw:
+                continue
+            # 相对路径（如 ghost.txt、test.py）视为在工作区内
+            if not raw.startswith("/") and ":" not in raw[:2]:
+                continue
+            if not self._path_in_workspace(raw):
+                return True
+        return False
 
     def verify_step(self, step: Dict[str, Any], state: Optional[AOSState] = None) -> StepVerificationResult:
         """
@@ -74,7 +118,19 @@ class PermissionGateway:
         description = (step.get("description") or "").lower()
         tool = (step.get("tool") or "").strip().lower()
 
-        # DANGEROUS
+        # DANGEROUS：访问 sandbox_workspace 之外的路径
+        if self._has_path_outside_workspace(step):
+            result = StepVerificationResult(
+                allowed=False,
+                risk_level=RiskLevel.DANGEROUS,
+                reason="步骤涉及工作区外路径，仅允许访问 sandbox_workspace 内",
+                step_id=step_id,
+                step_snapshot=dict(step),
+            )
+            self._apply_awaiting_approval(state, result)
+            return result
+
+        # DANGEROUS：危险关键词
         for kw in DANGEROUS_KEYWORDS:
             if kw in description or kw in tool:
                 result = StepVerificationResult(

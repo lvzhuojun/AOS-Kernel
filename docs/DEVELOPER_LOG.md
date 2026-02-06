@@ -60,6 +60,21 @@
 
 ## 开发进度
 
+### 2026-02-06 — Phase 1 核心内核开发圆满完成
+**2026-02-06: Phase 1 核心内核开发圆满完成。项目结构已规范化，通过全链路压力测试。**
+
+- 目录规范：`tests/` 成立，`test_gemini.py` 与 `debug_stress_test.py` 迁入，导入路径已修正（从项目根执行 `python -m tests.*`）。
+- 依赖与环境：requirements.txt 含 google-genai、python-dotenv、pydantic、docker；sandbox_workspace 临时文件已清理。
+- 文档：README 补充 Project Structure、Features、Usage；.gitignore 覆盖 .env、memory.json、*.log、__pycache__/、sandbox_workspace/。
+
+### 2026-02-06 — AOS-Kernel v1.0 稳定版发布
+**2026-02-06: AOS-Kernel v1.0 稳定版发布。全链路闭环、语义缓存与成本控制功能全部达成。**
+
+- 全链路闭环：理解 → 计划 → 权限 → 执行 → 验证 → 恢复（REPLAN/ABORT）完整打通；Docker 沙箱隔离、策略驱动权限网关、自愈循环（如 Case 4 ghost.txt → fixed.txt 补偿）均已实现。
+- 语义缓存：MemoryManager.find_similar_lesson(intent) + successful_plans 持久化；PlanningAgent 优先命中缓存（planning_from_cache），0-Token 计划复用。
+- 成本控制：LLMClient tier 路由（cheap/smart/ultra）、各 Agent 固定 tier、程序退出时打印成本统计（Cheap/Smart/缓存命中）。
+- 标准化与文档：README 完善（7 层架构图、核心特性、快速开始）；main 与 llm_client 统一使用 logging 分级输出；docs/FINAL_DEMO_LOG.txt 用于保存 `python main.py --yes` 的完整演示输出。
+
 ### 2026-02-06
 - ✅ 完成项目骨架初始化
 - ✅ 创建核心状态数据结构
@@ -80,6 +95,12 @@
 - Layer 7 RecoveryAgent：验证失败时调用 LLM 分析错误与结果，生成策略 RETRY/REPLAN/ABORT；REPLAN 时追加 new_steps 到 state.plan 并增加 retry_count，max_retries=3 防止无限重试。
 - main.py 自愈循环：执行 -> 验证 -> 若存在失败则恢复 -> REPLAN 时回到执行环节。
 - Test Case 4（压力测试）：读取不存在的 ghost.txt 失败 -> 验证失败 -> 恢复层 REPLAN 追加“创建 fixed.txt” -> 再次执行后补偿成功。
+
+**架构师审计修复（API 404 + 路径安全 + Test Case 4 意图）：**
+- utils/llm_client.py：确认使用 genai.Client(api_key=...)；模型 404 时依次尝试 gemini-1.5-flash、gemini-2.0-flash、gemini-1.5-pro；新增 _smoke_test()，可 `python -m utils.llm_client` 验证 generate_content 能通。
+- core/permission_gateway.py：在 verify_step 中增加路径安全校验；从 description/tool 及 step 的 path/file_path 提取路径，调用 _path_in_workspace(path)；任何访问 sandbox_workspace 之外的操作标记为 DANGEROUS。
+- main.py：Test Case 4 显式使用 user_input=input_4，并注释说明 state 由 input_4 重新生成、不复用 state_3。
+- 上述修复已完成，可进入 Layer 2 (Memory)，开始编写 core/memory_manager.py。
 
 ---
 

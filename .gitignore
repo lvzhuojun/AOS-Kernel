@@ -1,6 +1,19 @@
+# 1. 安全与隐私（不提交密钥与诊断日志）
 .env
+*.log
+docs/api_diagnostics.log
+
+# 2. 运行时的临时数据
+memory.json
+sandbox_workspace/
+TERMINAL_OUTPUT.txt
+CASE4_EXPECTED_LOG.md
+
+# 3. Python 编译文件
 __pycache__/
 *.pyc
-.venv/
-node_modules/
-sandbox_workspace/
+.pytest_cache/
+
+# 4. 操作系统文件
+.DS_Store
+Thumbs.db

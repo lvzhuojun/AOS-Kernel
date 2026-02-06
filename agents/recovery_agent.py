@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.memory_manager import MemoryManager
 from core.state import AOSState
 from utils import LLMClient
 
@@ -48,9 +49,11 @@ class RecoveryAgent:
     def __init__(
         self,
         llm_client: Optional[LLMClient] = None,
+        memory_manager: Optional[MemoryManager] = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
         self._llm = llm_client or LLMClient.from_env()
+        self._memory_manager = memory_manager or MemoryManager()
         self.max_retries = max_retries
 
     def _call_llm(self, state: AOSState) -> Dict[str, Any]:
@@ -101,7 +104,11 @@ class RecoveryAgent:
             f"错误信息：{err}\n\n"
             "请输出修复策略 JSON。"
         )
-        raw = self._llm.generate(system_prompt=RECOVERY_SYSTEM_PROMPT, user_prompt=user_prompt)
+        raw = self._llm.generate(
+            system_prompt=RECOVERY_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            tier="smart",
+        )
         try:
             data = json.loads(raw)
             if isinstance(data, dict):
@@ -131,6 +138,10 @@ class RecoveryAgent:
         state.memory["recovery_reason"] = data.get("reason", "")
 
         if strategy == STRATEGY_REPLAN:
+            # 显式清除验证失败步骤的旧执行结果，以便下一轮执行可重新执行这些步骤
+            for key, feedback in list(state.verification_feedback.items()):
+                if isinstance(feedback, dict) and feedback.get("status") == "FAILED":
+                    state.execution_results.pop(key, None)
             new_steps = data.get("new_steps") or []
             if isinstance(new_steps, list) and new_steps:
                 max_id = max((s.get("step_id", 0) for s in state.plan), default=0)
@@ -139,6 +150,15 @@ class RecoveryAgent:
                         st["step_id"] = max_id + 1 + i
                 state.plan = list(state.plan) + new_steps
             state.retry_count = state.retry_count + 1
+            # 持久化记忆：将本次 REPLAN 经验写入 memory.json
+            try:
+                self._memory_manager.append_lesson({
+                    "intent": state.intent or "",
+                    "reason": state.memory.get("recovery_reason", ""),
+                    "new_steps": new_steps,
+                })
+            except Exception:
+                pass
         elif strategy == STRATEGY_ABORT:
             state.error = state.error or state.memory.get("recovery_reason", "恢复层决定放弃")
 

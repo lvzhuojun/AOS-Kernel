@@ -91,8 +91,10 @@ class ExecutionAgent:
             return state
 
         state.current_phase = "execution"
+        # 若处于恢复阶段允许重试失败步骤，则本轮结束后清除该标记，避免无限重试
+        allow_retry_failed = state.memory.pop("allow_retry_failed_steps", False)
+
         next_step_id = state.memory.get("pending_approval_step_id")
-        # 若刚批准完，只执行之前挂起的那一步，且不再做权限校验（用户已批准）
         just_approved = next_step_id is not None
         if just_approved:
             state.memory.pop("pending_approval_step_id", None)
@@ -103,8 +105,15 @@ class ExecutionAgent:
         for step in steps_to_run:
             step_id = step.get("step_id")
             key = f"step_{step_id}"
-            if key in state.execution_results:
-                continue
+            existing = state.execution_results.get(key)
+            # 已有成功结果则跳过；若为失败且允许重试（恢复阶段），则重新执行
+            if existing is not None:
+                if existing.get("success") is True:
+                    continue
+                if allow_retry_failed and existing.get("success") is False:
+                    pass  # 不跳过，重新执行
+                else:
+                    continue
             # 权限校验（用户已批准的本步则跳过校验）
             if not just_approved:
                 result = self.gateway.verify_step(step, state)
