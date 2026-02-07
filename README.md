@@ -26,9 +26,10 @@ Understand → Plan → Permit → Execute → Verify → Recover in a single pi
 
 AOS-Kernel is an **AI Operating System kernel** that turns natural-language intents into safe, stepwise executions. It uses a **7-layer cognitive stack** (Understanding, Memory, Planning, Permission, Execution, Verification, Recovery), runs user code in a **Docker sandbox**, and supports **semantic caching** and **self-healing** (e.g. REPLAN when a step fails).
 
-- **Input:** Free-form user instructions (e.g. *"Create a test.py in the workspace and run it"*).
-- **Output:** Executed steps, verification feedback, and optional recovery (new steps) when something fails.
-- **Cost control:** Tiered LLM routing (cheap/smart/ultra), request throttling, and intent/plan caches to minimize API calls.
+- **Input:** Free-form user instructions (e.g. *"Create a hello.py in the workspace and run it"*).
+- **Output:** Executed steps, verification feedback (including plan-specified filenames), and optional self-healing (REPLAN) when verification fails.
+- **Interactive Shell:** Run `python main.py -i` to enter a loop where you type any instruction; type `exit` to quit.
+- **Cost control:** Tiered LLM routing (2.0-flash preferred), request throttling, 429 backoff, and intent/plan caches to minimize API calls.
 
 ---
 
@@ -117,6 +118,8 @@ AOS-Kernel/
 ├── utils/
 │   └── llm_client.py
 ├── docs/
+├── scripts/
+│   └── clean_env.py
 ├── tests/
 │   ├── test_gemini.py
 │   └── debug_stress_test.py
@@ -177,26 +180,53 @@ Optional:
 
 ## Usage
 
-**Automated run (recommended)** — all permission prompts auto-approved:
+**Automated run (built-in tests)** — all permission prompts auto-approved:
 
 ```bash
 python main.py --yes
 ```
 
-This runs two built-in flows:
+This runs two built-in flows (Case 3 & 4). At the end you get a **cost summary**: Cheap/Smart/Ultra call counts and cache hits.
 
-- **Case 3:** Create `test.py` in the workspace and run it (output: `Hello AOS-Kernel`).
-- **Case 4:** Read non-existent `ghost.txt` → verify fails → recovery REPLAN → create `fixed.txt` as fallback.
-
-At the end you get a **cost summary**: Cheap/Smart/Ultra call counts and cache hits.
-
-**Interactive run** — you approve or deny RISKY/DANGEROUS steps:
+**Default run (Case 3 & 4 with approval)** — you approve or deny RISKY/DANGEROUS steps:
 
 ```bash
 python main.py
 ```
 
 When a step is blocked, the terminal asks for `y`/`n` before continuing.
+
+### Interactive Shell mode
+
+To **enter interactive mode** and type your own instructions (no Case 3/4), use `-i` or `--interactive`:
+
+```bash
+python main.py -i
+```
+
+or
+
+```bash
+python main.py --interactive
+```
+
+- The program will prompt: `[AOS-Kernel] 请输入指令 (输入 'exit' 退出):`
+- Enter any natural-language task (e.g. *“在工作区创建一个 hello.txt 并写入 Hello”*).
+- Type `exit` to quit; Docker and cost stats are printed on exit.
+- To auto-approve all permission prompts in interactive mode: `python main.py -i --yes`.
+
+### Clean experiment environment
+
+To start with a **clean state** (no cached plans, no workspace files), run from the project root:
+
+```bash
+python scripts/clean_env.py
+```
+
+This removes `memory.json` and clears the contents of `sandbox_workspace/` (or the path set in `WORKSPACE_PATH`). Optional one-liners:
+
+- **Windows (PowerShell):** `Remove-Item -Force memory.json -ErrorAction SilentlyContinue; Remove-Item -Recurse -Force sandbox_workspace\* -ErrorAction SilentlyContinue`
+- **Linux/macOS:** `rm -f memory.json && rm -rf sandbox_workspace/*`
 
 ---
 

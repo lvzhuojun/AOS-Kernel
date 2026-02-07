@@ -8,6 +8,7 @@ memory.json
 sandbox_workspace/
 TERMINAL_OUTPUT.txt
 CASE4_EXPECTED_LOG.md
+data/
 
 # 3. Python 编译文件
 __pycache__/

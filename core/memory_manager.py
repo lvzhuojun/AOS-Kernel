@@ -23,6 +23,28 @@ def _normalize_for_match(text: str) -> set[str]:
     return set(t for t in tokens if len(t) > 0)
 
 
+# 动作关键词：用于区分「读/创建/运行/删除」等不同意图，避免「读取文件」误用「创建文件」的缓存
+_ACTION_READ = {"读", "读取", "read", "打开", "open", "查看", "view", "列出", "list"}
+_ACTION_CREATE_WRITE = {"创建", "写", "写入", "create", "write", "新建", "添加", "add"}
+_ACTION_RUN = {"运行", "执行", "run", "execute"}
+_ACTION_DELETE = {"删除", "delete", "移除", "remove"}
+
+
+def _get_action_tags(tokens: set[str]) -> set[str]:
+    """从意图分词中提取动作标签，用于校验缓存是否同质。"""
+    tags = set()
+    for t in tokens:
+        if t in _ACTION_READ:
+            tags.add("read")
+        elif t in _ACTION_CREATE_WRITE:
+            tags.add("create")
+        elif t in _ACTION_RUN:
+            tags.add("run")
+        elif t in _ACTION_DELETE:
+            tags.add("delete")
+    return tags
+
+
 class MemoryManager:
     """持久化记忆：lessons_learned + successful_plans（语义缓存）。"""
 
@@ -83,24 +105,39 @@ class MemoryManager:
         self._save_raw(data)
 
     def find_similar_lesson(self, intent: str) -> Optional[Dict[str, Any]]:
-        """关键词/模糊匹配：是否有类似意图的成功计划，返回 {intent, plan} 或 None。"""
+        """
+        关键词/模糊匹配：是否有类似意图的成功计划，返回 {intent, plan} 或 None。
+        提高阈值并做动作校验，避免「读取文件」误用「创建文件」的计划缓存。
+        """
         intent = (intent or "").strip()
         if not intent:
             return None
         current_tokens = _normalize_for_match(intent)
         if len(current_tokens) < 1:
             return None
+        current_actions = _get_action_tags(current_tokens)
+        min_overlap = 4  # 至少 4 个关键词重叠（原 2 太宽松）
+        min_ratio = 0.4  # 重叠数 / min(|当前|, |历史|) >= 0.4
+
         for entry in reversed(self.load_successful_plans()):
             stored_intent = (entry.get("intent") or "").strip()
             stored_plan = entry.get("plan")
             if not stored_plan or not isinstance(stored_plan, list):
                 continue
             stored_tokens = _normalize_for_match(stored_intent)
+            stored_actions = _get_action_tags(stored_tokens)
+            # 动作不一致则不复用：例如当前是「读」、历史是「创建」则跳过
+            if current_actions and stored_actions and not (current_actions & stored_actions):
+                continue
             overlap = len(current_tokens & stored_tokens)
-            if overlap >= 2:
-                return {"intent": stored_intent, "plan": stored_plan}
-            if stored_intent in intent or intent in stored_intent:
-                return {"intent": stored_intent, "plan": stored_plan}
+            if overlap < min_overlap:
+                if not (stored_intent in intent or intent in stored_intent):
+                    continue
+            else:
+                ratio = overlap / min(len(current_tokens), len(stored_tokens)) if stored_tokens else 0
+                if ratio < min_ratio:
+                    continue
+            return {"intent": stored_intent, "plan": stored_plan}
         return None
 
     def load_intent_cache(self) -> List[Dict[str, Any]]:

@@ -2,11 +2,13 @@
 AOS-Kernel 入口：理解 -> 计划 -> 权限 -> 执行 全链路集成
 
 用法：
-  python main.py           # 交互式，需人工审批
-  python main.py --yes     # 自动化测试，自动批准所有操作（无需 input）
+  python main.py                    # 跑 Case 3/4，需人工审批
+  python main.py --yes              # 跑 Case 3/4，自动批准（自动化/CI）
+  python main.py -i                  # 交互式 Shell：输入任意指令，输入 exit 退出
+  python main.py --interactive --yes # 交互式 + 自动批准
 
 测试用例：
-- Case 3: 在工作区创建 test.py 并运行（全链路；--yes 时自动审批）
+- Case 3: 在工作区创建 demo_script.py 并运行（全链路；--yes 时自动审批）
 - Case 4: 自愈场景（读取 ghost.txt 失败 -> REPLAN -> 创建 fixed.txt）
 """
 
@@ -184,8 +186,15 @@ def main() -> None:
         action="store_true",
         help="自动批准所有权限拦截，无需人工 input（适用于自动化/CI 测试）",
     )
+    parser.add_argument(
+        "--interactive",
+        "-i",
+        action="store_true",
+        help="交互式 Shell 模式：不跑 Case 3/4，循环接受用户指令，输入 exit 退出",
+    )
     args = parser.parse_args()
     auto_approve = args.yes
+    interactive = args.interactive
 
     gateway = PermissionGateway()
     docker_manager = DockerManager()
@@ -205,64 +214,97 @@ def main() -> None:
         if auto_approve:
             logger.info("[运行模式] --yes 已开启，所有操作将自动批准。\n")
 
-        # ---------- 测试用例 3：全链路集成 ----------
-        logger.info("\n" + "=" * 80)
-        logger.info("测试用例 3: 全链路集成 — 在工作区创建 test.py 并运行")
-        logger.info("=" * 80)
-        input_3 = "在工作区创建一个 test.py，内容是打印 'Hello AOS-Kernel'，然后运行这个脚本。"
-        agents_3 = make_fresh_agents()
-        state_3 = run_full_pipeline(
-            user_input=input_3,
-            gateway=gateway,
-            verbose=True,
-            auto_approve=auto_approve,
-            **agents_3,
-        )
-        logger.info("\n--- 用例 3 结束 ---")
-        if state_3.execution_results:
-            for k, v in state_3.execution_results.items():
-                logger.info("  %s: %s", k, v)
-        if not has_verification_failures(state_3) and state_3.plan:
-            memory_manager.record_successful_plan(state_3.intent, state_3.plan)
-            memory_manager.add_intent_to_cache(
-                input_3,
-                state_3.intent,
-                state_3.memory.get("constraints") or [],
-                state_3.memory.get("suggested_tools") or [],
-                state_3.memory.get("intent_confidence", 0.5),
-                state_3.memory.get("clarification_questions") or [],
+        if interactive:
+            # ---------- 交互式 Shell：不跑 Case 3/4，循环接受用户指令 ----------
+            logger.info("[运行模式] 交互式 Shell（输入 'exit' 退出）\n")
+            while True:
+                user_input = input("\n[AOS-Kernel] 请输入指令 (输入 'exit' 退出): ").strip()
+                if not user_input:
+                    continue
+                if user_input.lower() == "exit":
+                    logger.info("已退出交互模式。")
+                    break
+                agents = make_fresh_agents()
+                state = run_full_pipeline(
+                    user_input=user_input,
+                    gateway=gateway,
+                    verbose=True,
+                    auto_approve=auto_approve,
+                    **agents,
+                )
+                if state.execution_results:
+                    logger.info("\n--- 本轮执行结果 ---")
+                    for k, v in state.execution_results.items():
+                        logger.info("  %s: %s", k, v)
+                if not has_verification_failures(state) and state.plan:
+                    memory_manager.record_successful_plan(state.intent, state.plan)
+                    memory_manager.add_intent_to_cache(
+                        user_input,
+                        state.intent,
+                        state.memory.get("constraints") or [],
+                        state.memory.get("suggested_tools") or [],
+                        state.memory.get("intent_confidence", 0.5),
+                        state.memory.get("clarification_questions") or [],
+                    )
+        else:
+            # ---------- 测试用例 3：全链路集成 ----------
+            logger.info("\n" + "=" * 80)
+            logger.info("测试用例 3: 全链路集成 — 在工作区创建 demo_script.py 并运行")
+            logger.info("=" * 80)
+            input_3 = "在工作区创建一个 demo_script.py，内容是打印 'Hello AOS-Kernel'，然后运行这个脚本。"
+            agents_3 = make_fresh_agents()
+            state_3 = run_full_pipeline(
+                user_input=input_3,
+                gateway=gateway,
+                verbose=True,
+                auto_approve=auto_approve,
+                **agents_3,
             )
+            logger.info("\n--- 用例 3 结束 ---")
+            if state_3.execution_results:
+                for k, v in state_3.execution_results.items():
+                    logger.info("  %s: %s", k, v)
+            if not has_verification_failures(state_3) and state_3.plan:
+                memory_manager.record_successful_plan(state_3.intent, state_3.plan)
+                memory_manager.add_intent_to_cache(
+                    input_3,
+                    state_3.intent,
+                    state_3.memory.get("constraints") or [],
+                    state_3.memory.get("suggested_tools") or [],
+                    state_3.memory.get("intent_confidence", 0.5),
+                    state_3.memory.get("clarification_questions") or [],
+                )
 
-        # ---------- 测试用例 4：压力测试（故意失败 + 自愈 REPLAN） ----------
-        # 使用全新 Agent 与 input_4，与 Case 3 完全隔离。
-        logger.info("\n" + "=" * 80)
-        logger.info("测试用例 4: 自愈 — 读取不存在的 ghost.txt，失败则创建 fixed.txt 补偿")
-        logger.info("=" * 80)
-        input_4 = "读取工作区中一个不存在的文件 ghost.txt，如果读取失败，请创建一个名为 fixed.txt 的文件作为补偿。"
-        agents_4 = make_fresh_agents()
-        state_4 = run_full_pipeline(
-            user_input=input_4,
-            gateway=gateway,
-            verbose=True,
-            auto_approve=auto_approve,
-            **agents_4,
-        )
-        logger.info("\n--- 用例 4 结束 ---")
-        if state_4.execution_results:
-            for k, v in state_4.execution_results.items():
-                logger.info("  %s: %s", k, v)
-        if state_4.verification_feedback:
-            logger.info("verification_feedback: %s", state_4.verification_feedback)
-        if not has_verification_failures(state_4) and state_4.plan:
-            memory_manager.record_successful_plan(state_4.intent, state_4.plan)
-            memory_manager.add_intent_to_cache(
-                input_4,
-                state_4.intent,
-                state_4.memory.get("constraints") or [],
-                state_4.memory.get("suggested_tools") or [],
-                state_4.memory.get("intent_confidence", 0.5),
-                state_4.memory.get("clarification_questions") or [],
+            # ---------- 测试用例 4：压力测试（故意失败 + 自愈 REPLAN） ----------
+            # 使用全新 Agent 与 input_4，与 Case 3 完全隔离。
+            logger.info("\n" + "=" * 80)
+            logger.info("测试用例 4: 自愈 — 读取不存在的 ghost.txt，失败则创建 fixed.txt 补偿")
+            logger.info("=" * 80)
+            input_4 = "读取工作区中一个不存在的文件 ghost.txt，如果读取失败，请创建一个名为 fixed.txt 的文件作为补偿。"
+            agents_4 = make_fresh_agents()
+            state_4 = run_full_pipeline(
+                user_input=input_4,
+                gateway=gateway,
+                verbose=True,
+                auto_approve=auto_approve,
+                **agents_4,
             )
+            logger.info("\n--- 用例 4 结束 ---")
+            if state_4.execution_results:
+                for k, v in state_4.execution_results.items():
+                    logger.info("  %s: %s", k, v)
+            if state_4.verification_feedback:
+                logger.info("verification_feedback: %s", state_4.verification_feedback)
+            if not has_verification_failures(state_4) and state_4.plan:
+                memory_manager.record_successful_plan(state_4.intent, state_4.plan)
+                memory_manager.add_intent_to_cache(
+                    input_4,
+                    state_4.intent,
+                    state_4.memory.get("constraints") or [],
+                    state_4.memory.get("suggested_tools") or [],
+                    state_4.memory.get("intent_confidence", 0.5),
+                    state_4.memory.get("clarification_questions") or [],
+                )
     finally:
         docker_manager.stop()
         logger.info("\n[已清理] Docker 沙箱容器已停止并移除。")

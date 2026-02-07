@@ -9,6 +9,7 @@ Intent Parser（意图解析层）
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from core.memory_manager import MemoryManager
@@ -23,21 +24,21 @@ INTENT_SYSTEM_PROMPT = """
 - 读取用户的自然语言指令
 - 提取结构化信息：intent, constraints, suggested_tools, confidence, clarification_questions
 
+重要：你必须严格提取用户提供的文件名与路径，严禁自行修改或替换为其他名称（如 test.py、ghost.txt 等）。
+
 输出要求：
 - 严格输出一个 JSON 对象，不要输出任何解释性文字或多余内容
 - 字段定义：
-  - intent: 核心目标。使用简洁的一句话概括用户的主要意图。
-  - constraints: 字符串列表。仅包含用户明确提到的限制条件，例如：
-    - 使用什么语言或技术栈（如 "使用 Python"、"不要用 Docker"）
-    - 资源或权限限制（如 "不要联网"、"只能读 D 盘"）
-  - suggested_tools: 字符串列表。你认为适合完成该任务的工具名称（抽象名称即可，例如 "file_system_reader", "log_frequency_analyzer"）。
-  - confidence: 浮点数，范围 0.0 - 1.0，用于表示你对当前 intent 判定的置信度。
-  - clarification_questions: 字符串列表。当信息不足或需求模糊时，给出 1-3 条澄清问题；否则给空列表。
+  - intent: 核心目标。使用简洁的一句话概括用户的主要意图；若用户指定了文件名（如 example_file.py），intent 中必须原样保留该文件名。
+  - constraints: 字符串列表。仅包含用户明确提到的限制条件。
+  - suggested_tools: 字符串列表。适合完成该任务的工具名称（如 "file_system_reader", "file_writer", "python_interpreter"）。
+  - confidence: 浮点数，范围 0.0 - 1.0。
+  - clarification_questions: 字符串列表。信息不足时给出 1-3 条澄清问题；否则给空列表。
 
-示例（仅作格式参考）：
+示例（仅为格式参考，严禁在实际输出中使用示例中的具体路径/文件名）：
 {
-  "intent": "分析 D 盘 logs 文件夹，找出报错最多的行",
-  "constraints": ["仅访问 D:/logs", "只读文件，不修改内容"],
+  "intent": "分析 example_dir 下的日志，找出报错最多的行",
+  "constraints": ["仅访问指定目录", "只读文件"],
   "suggested_tools": ["file_system_reader", "log_frequency_analyzer"],
   "confidence": 0.86,
   "clarification_questions": []
@@ -99,6 +100,12 @@ class IntentParser:
                     ],
                 }
 
+        # 若 LLM 返回了低置信度但 intent 已明确（含文件名 + 创建/运行），提升置信度以免误入澄清
+        intent_str = str(data.get("intent") or "").strip()
+        if intent_str and float(data.get("confidence", 0)) < 0.7:
+            if re.search(r"\w+\.(?:py|txt)\b", intent_str) and ("创建" in intent_str or "运行" in intent_str):
+                data["confidence"] = 0.85
+                data["clarification_questions"] = []
         return data
 
     def _state_from_parsed(self, user_input: str, data: Dict[str, Any]) -> AOSState:

@@ -100,7 +100,7 @@ class PermissionGateway:
         for raw in self._extract_paths_from_step(step):
             if not raw:
                 continue
-            # 相对路径（如 ghost.txt、test.py）视为在工作区内
+            # 相对路径（如 example.txt、script.py）视为在工作区内
             if not raw.startswith("/") and ":" not in raw[:2]:
                 continue
             if not self._path_in_workspace(raw):

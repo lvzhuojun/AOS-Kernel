@@ -9,6 +9,7 @@ Planning Agent（计划层）
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from core.memory_manager import MemoryManager
@@ -28,35 +29,22 @@ PLANNING_SYSTEM_PROMPT = """
 2. **安全性**：考虑每个步骤可能涉及的安全风险（文件访问、网络请求、系统命令等）
 3. **原子性**：每个步骤只做一件事，避免复合操作
 4. **可验证性**：每个步骤完成后应有明确的预期结果，便于验证
+5. **文件名显式化**：你必须严格提取用户意图中的文件名；description 与 expected_outcome 中必须原样写出用户指定的文件名（如用户说 hello.py 就写 hello.py），严禁自行修改或替换为 test.py 等未在用户意图中出现的文件名。
+6. **创建并运行必须拆分**：如果任务包含“创建并运行”或“创建……然后运行”，你必须将其拆分为两个独立步骤：第一步 file_writer（创建/写入文件），第二步 python_interpreter（运行脚本）。严禁合并为一步。
 
 输出要求：
 - 严格输出一个 JSON 数组，不要输出任何解释性文字或多余内容
 - 数组中的每个元素代表一个执行步骤，包含以下字段：
   - step_id: 整数，步骤序号（从 1 开始）
-  - description: 字符串，这一步要做什么（简洁明确）
-  - tool: 字符串，预估要使用的工具名称（例如 "file_system_reader", "python_interpreter", "log_analyzer"）
-  - expected_outcome: 字符串，这一步完成后的预期状态或输出（用于后续验证）
+  - description: 字符串，这一步要做什么（必须包含用户指定的具体文件名）
+  - tool: 字符串，如 "file_writer", "python_interpreter", "file_system_reader"
+  - expected_outcome: 字符串，这一步完成后的预期（涉及文件时须写出该文件名）
 
-示例（仅作格式参考）：
+示例（仅为格式参考，严禁在实际输出中使用示例中的具体路径/文件名）：
 [
-  {
-    "step_id": 1,
-    "description": "列出 D:/logs 目录下的所有文件",
-    "tool": "file_system_reader",
-    "expected_outcome": "获得文件列表，包含所有 .log 或 .txt 文件路径"
-  },
-  {
-    "step_id": 2,
-    "description": "逐个读取日志文件内容",
-    "tool": "file_system_reader",
-    "expected_outcome": "获得每个文件的完整文本内容"
-  },
-  {
-    "step_id": 3,
-    "description": "统计每行文本的出现频率，筛选出包含 'ERROR' 或 'FATAL' 的行",
-    "tool": "log_frequency_analyzer",
-    "expected_outcome": "获得报错行的频率统计，按出现次数降序排列"
-  }
+  {"step_id": 1, "description": "列出 example_dir 下的所有文件", "tool": "file_system_reader", "expected_outcome": "获得文件列表"},
+  {"step_id": 2, "description": "读取 example_file.log 内容", "tool": "file_system_reader", "expected_outcome": "获得 example_file.log 的文本内容"},
+  {"step_id": 3, "description": "统计报错行频率", "tool": "log_frequency_analyzer", "expected_outcome": "获得频率统计"}
 ]
 """.strip()
 
@@ -84,7 +72,7 @@ class PlanningAgent:
 
 建议工具：{tools_text}
 
-请根据上述信息，生成一个详细的执行计划（JSON 数组）。确保每个步骤都是原子性的单一动作。"""
+请根据上述信息，生成一个详细的执行计划（JSON 数组）。确保每个步骤都是原子性的单一动作；若任务包含“创建并运行”，必须拆成两步：1. file_writer 创建文件，2. python_interpreter 运行。description 与 expected_outcome 中必须原样使用用户意图里的文件名，严禁使用 test.py 等未出现的文件名。"""
 
         raw = self._llm.generate(
             system_prompt=PLANNING_SYSTEM_PROMPT,
@@ -150,20 +138,24 @@ class PlanningAgent:
                     "expected_outcome": "获得 ghost.txt 文件内容",
                 },
             ]
-        elif "test.py" in intent_lower or ("hello aos" in intent_lower and "工作区" in intent_lower):
-            # 全链路测试：创建 test.py 并运行
+        elif any(x in intent_lower for x in (".py", "工作区", "创建", "运行")) and ("打印" in intent_lower or "print" in intent_lower):
+            # 创建并运行 Python 脚本：从意图中提取文件名与打印内容，不要硬编码 test.py
+            fname_m = re.search(r"(\w+\.py)\b", intent)
+            script_name = fname_m.group(1) if fname_m else "output.py"
+            content_m = re.search(r"打印\s*['\"]([^'\"]+)['\"]|print\s*['\"]([^'\"]+)['\"]|内容[是为]*\s*['\"]([^'\"]+)['\"]", intent, re.IGNORECASE)
+            content_hint = (content_m.group(1) or content_m.group(2) or content_m.group(3) or "Hello").strip()
             plan = [
                 {
                     "step_id": 1,
-                    "description": "在工作区创建 test.py，内容为打印 Hello AOS-Kernel",
+                    "description": f"在工作区创建 {script_name}，内容为打印 '{content_hint}'",
                     "tool": "file_writer",
-                    "expected_outcome": "生成 test.py 文件",
+                    "expected_outcome": f"生成 {script_name} 文件",
                 },
                 {
                     "step_id": 2,
-                    "description": "运行 test.py 脚本",
+                    "description": f"运行 {script_name} 脚本",
                     "tool": "python_interpreter",
-                    "expected_outcome": "输出 Hello AOS-Kernel",
+                    "expected_outcome": f"输出 {content_hint}",
                 },
             ]
         else:

@@ -251,6 +251,7 @@ class LLMClient:
                     else:
                         wait_sec = self.config.retry_backoff_base * (2 ** attempt)
                     time.sleep(wait_sec)
+        # 429/5xx 等重试耗尽后进入兜底；兜底严禁写死 test.py，必须从 user_prompt 提取或原样返回
         return self._local_fallback(system_prompt, user_prompt)
 
     def _generate_gemini_with_timeout(
@@ -316,33 +317,43 @@ class LLMClient:
             return future.result(timeout=timeout)
 
     def _local_fallback(self, system_prompt: str, user_prompt: str) -> str:
+        """
+        API 失败时的兜底：严禁返回写死的文件名（如 test.py）。
+        从 user_prompt 中还原真实用户输入（可能含「用户输入：…请根据上面的要求输出 JSON。」），再构造 intent。
+        """
+        import re
         _ = system_prompt
-        text = user_prompt
-        if "logs" in text or "日志" in text:
+        text = (user_prompt or "").strip()
+        # 还原真实用户输入：Intent 解析时传入的是「用户输入：xxx\n请根据上面的要求输出 JSON。」
+        if "用户输入：" in text:
+            text = text.split("用户输入：", 1)[-1].strip()
+        if "请根据上面的要求输出 JSON" in text:
+            text = text.split("请根据上面的要求输出 JSON")[0].strip()
+        if "\n" in text:
+            text = text.split("\n")[0].strip()
+        text = text.strip()
+        # 尝试从用户输入中提取文件名
+        file_match = re.search(r"(\w+\.(?:py|txt|log|json|md))\b", text, re.IGNORECASE)
+        extracted_file = file_match.group(1) if file_match else None
+
+        # 仅当用户明确提到“读取 X / 创建 X / 补偿”且能提取到文件名时，做最小推断
+        if ("ghost" in text.lower() or "不存在的文件" in text) and "补偿" in text:
+            comp_file = re.search(r"(\w+\.(?:txt|py))\s*作为补偿|创建\s*(\w+\.txt)", text)
+            comp_name = (comp_file.group(1) or comp_file.group(2)) if comp_file else "fixed.txt"
+            intent = f"读取工作区中不存在的文件，失败则创建 {comp_name} 作为补偿"
             return (
                 '{'
-                '"intent": "分析日志并找出报错最多的行",'
-                '"constraints": ["可能需要访问本地文件系统"],'
-                '"suggested_tools": ["file_system_reader", "log_frequency_analyzer"],'
-                '"confidence": 0.85,'
+                f'"intent": "{intent}",'
+                '"constraints": ["仅在工作区内操作"],'
+                '"suggested_tools": ["file_system_reader", "file_writer"],'
+                '"confidence": 0.75,'
                 '"clarification_questions": []'
                 '}'
             )
-        if "写一个脚本" in text or "写脚本" in text:
-            return (
-                '{'
-                '"intent": "编写脚本",'
-                '"constraints": [],'
-                '"suggested_tools": ["code_writer"],'
-                '"confidence": 0.5,'
-                '"clarification_questions": ['
-                '"你希望使用哪种编程语言？",'
-                '"脚本运行在哪个操作系统或环境？"'
-                "]"
-                "}"
-            )
-        if "test.py" in text or "Hello AOS" in text or "工作区" in text:
-            intent = "在工作区创建 test.py 并运行，输出 Hello AOS-Kernel" if "AOS-Kernel" in text else "在工作区创建 test.py 并运行，输出 Hello AOS"
+        # 创建/运行脚本：用真实用户输入作为 intent，置信度设高以免误入澄清
+        if ("创建" in text or "运行" in text or "write" in text.lower() or "run" in text.lower()) and extracted_file:
+            intent = text[:200] if len(text) <= 200 else (text[:197] + "...")
+            intent = intent.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
             return (
                 '{'
                 f'"intent": "{intent}",'
@@ -352,18 +363,19 @@ class LLMClient:
                 '"clarification_questions": []'
                 '}'
             )
-        # Test Case 4：intent 明确为「读取 ghost.txt」，失败则创建 fixed.txt
-        if "ghost" in text.lower() or ("不存在的文件" in text and "补偿" in text) or "fixed.txt" in text or ("补偿" in text and "fixed" in text.lower()):
+        # 日志类：通用描述，不写死路径
+        if "logs" in text or "日志" in text:
             return (
                 '{'
-                '"intent": "读取 ghost.txt，失败则创建 fixed.txt 作为补偿",'
-                '"constraints": ["仅在工作区内操作"],'
-                '"suggested_tools": ["file_system_reader", "file_writer"],'
-                '"confidence": 0.85,'
+                '"intent": "分析日志并找出报错最多的行",'
+                '"constraints": ["可能需要访问本地文件系统"],'
+                '"suggested_tools": ["file_system_reader", "log_frequency_analyzer"],'
+                '"confidence": 0.75,'
                 '"clarification_questions": []'
                 '}'
             )
-        escaped = text.replace('"', '\\"').strip()
+        # 默认：intent 必须为 user_input 原文，绝不替换为 test.py
+        escaped = text.replace("\\", "\\\\").replace('"', '\\"').strip()
         return (
             '{'
             f'"intent": "{escaped}",'

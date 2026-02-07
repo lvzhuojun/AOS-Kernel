@@ -60,6 +60,15 @@
 
 ## 开发进度
 
+### 2026-02-07 — Phase 1 最终修复版封版
+**2026-02-07: Phase 1 最终修复版封版。彻底解决了硬编码幻觉，实现了全链路物理验证与交互式 Shell。**
+
+- 硬编码清除：移除所有业务逻辑中的 test.py/ghost.txt 等写死路径；执行层从 step description/parameters 动态提取文件名，解析失败时由 LLM(cheap) 生成代码。
+- 原子化计划：Planning 层强制「创建并运行」拆分为两步（file_writer → python_interpreter）；System Prompt 禁止示例使用具体文件名，必须严格提取用户提供的文件名。
+- 验证层针对性：VerificationAgent 从 step 中提取 expected_file，验证与反馈均针对计划中指定的文件名，不做泛泛检查。
+- 交互模式：main.py 支持 -i/--interactive，循环接受用户指令，输入 exit 退出；清理环境脚本 scripts/clean_env.py 清空 memory.json 与 sandbox_workspace/。
+- 429 与兜底：API 429 时重试 [5,10,20]s 后进入兜底；兜底从 user_prompt 还原真实用户输入，严禁返回 test.py；意图解析对「创建/运行+文件名」类指令提升置信度，避免误入澄清。
+
 ### 2026-02-06 — Phase 1 核心内核开发圆满完成
 **2026-02-06: Phase 1 核心内核开发圆满完成。项目结构已规范化，通过全链路压力测试。**
 

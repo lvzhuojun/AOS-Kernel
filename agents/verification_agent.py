@@ -2,11 +2,13 @@
 Verification Agent（验证层 Layer 6）
 
 对比 execution_results 与 plan 中的 expected_outcome，更新 verification_feedback。
+验证时必须针对计划中指定的文件名进行检查，而非通用检查。
 支持简单验证（exit_code）与可选语义验证（LLM）。
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Optional
 
 from core.state import AOSState
@@ -14,6 +16,22 @@ from utils import LLMClient
 
 VERIFY_STATUS_SUCCESS = "SUCCESS"
 VERIFY_STATUS_FAILED = "FAILED"
+
+
+def _extract_expected_filename(step: Dict[str, Any]) -> Optional[str]:
+    """从步骤的 description / expected_outcome 中提取本步涉及的文件名（计划中指定的那个）。"""
+    desc = (step.get("description") or "").strip()
+    expected = (step.get("expected_outcome") or "").strip()
+    combined = f"{desc} {expected}"
+    if not combined.strip():
+        return None
+    m = re.search(r"(\w+\.(?:py|txt|log|json|md))\b", combined, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"文件\s*[：:]\s*(\w+\.\w+)|[\"'](\w+\.\w+)[\"']", combined)
+    if m:
+        return m.group(1) or m.group(2)
+    return None
 
 
 class VerificationAgent:
@@ -25,17 +43,27 @@ class VerificationAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None) -> None:
         self._llm = llm_client or LLMClient.from_env()
 
-    def _semantic_verify(self, expected_outcome: str, result_text: str, success: bool) -> str:
+    def _semantic_verify(
+        self,
+        expected_outcome: str,
+        result_text: str,
+        success: bool,
+        expected_file: Optional[str] = None,
+    ) -> str:
         """
         可选：调用 LLM 判断“执行结果是否达到了预期目标？”。
-        若 LLM 不可用或超时，则按 success 返回简短原因。
+        若提供了 expected_file，则强调必须针对该文件名进行判断（是否已创建/存在），而非泛泛检查。
         """
+        file_hint = ""
+        if expected_file:
+            file_hint = f"本步骤预期涉及文件「{expected_file}」。请判断执行结果是否表明该文件已正确创建或存在；不要用其他文件名判断。\n"
         user_prompt = (
             f"预期目标：{expected_outcome}\n"
+            f"{file_hint}"
             f"执行结果（或错误信息）：{result_text[:500]}\n"
             f"请用一句话判断：执行结果是否达到了预期目标？回答 是 或 否，并简要说明原因。"
         )
-        system_prompt = "你是 AOS-Kernel 的验证模块。根据预期目标与执行结果，判断是否达成。只输出判断结论和一句话原因。"
+        system_prompt = "你是 AOS-Kernel 的验证模块。根据预期目标与执行结果，判断是否达成。若给出了预期文件名，必须针对该文件判断。只输出判断结论和一句话原因。"
         try:
             raw = self._llm.generate(
                 system_prompt=system_prompt,
@@ -61,12 +89,14 @@ class VerificationAgent:
             step_id = step.get("step_id")
             key = f"step_{step_id}"
             expected = step.get("expected_outcome") or ""
+            expected_file = _extract_expected_filename(step)
 
             if key not in state.execution_results:
                 state.verification_feedback[key] = {
                     "status": VERIFY_STATUS_FAILED,
                     "reason": "该步骤未产生执行结果（可能被拦截或未执行）",
                     "expected_outcome": expected,
+                    "expected_file": expected_file,
                 }
                 continue
 
@@ -75,21 +105,26 @@ class VerificationAgent:
             result_text = str(res.get("result", res.get("stdout", "")) or "")
             exit_code = res.get("exit_code", -1)
 
-            # 简单验证
+            # 简单验证：针对计划中指定的文件，若步骤涉及“创建/生成某文件”，成功时在 reason 中体现文件名
             if success and exit_code == 0:
                 status = VERIFY_STATUS_SUCCESS
                 reason = "exit_code=0，执行成功"
+                if expected_file:
+                    reason = f"exit_code=0，执行成功（预期文件：{expected_file}）"
             else:
                 status = VERIFY_STATUS_FAILED
                 reason = f"exit_code={exit_code}，执行失败或异常：{result_text[:200]}"
+                if expected_file:
+                    reason = f"exit_code={exit_code}，执行失败或异常（本步预期文件：{expected_file}）：{result_text[:180]}"
 
             if use_semantic and status == VERIFY_STATUS_FAILED:
-                reason = self._semantic_verify(expected, result_text, success)
+                reason = self._semantic_verify(expected, result_text, success, expected_file=expected_file)
 
             state.verification_feedback[key] = {
                 "status": status,
                 "reason": reason,
                 "expected_outcome": expected,
+                "expected_file": expected_file,
             }
 
         return state
